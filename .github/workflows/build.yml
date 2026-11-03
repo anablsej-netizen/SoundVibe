@@ -73,8 +73,8 @@ jobs:
                   applicationId = "com.example.soundvibe"
                   minSdk = 29
                   targetSdk = 34
-                  versionCode = 1
-                  versionName = "1.0"
+                  versionCode = 2
+                  versionName = "1.1"
               }
 
               buildTypes {
@@ -192,7 +192,7 @@ jobs:
                   val bass = findViewById<CheckBox>(R.id.bassCheck)
 
                   val prefs = getSharedPreferences(VibeService.PREFS, MODE_PRIVATE)
-                  bar.progress = prefs.getInt(VibeService.KEY_SENS, 50)
+                  bar.progress = prefs.getInt(VibeService.KEY_SENS, 40)
                   bass.isChecked = prefs.getBoolean(VibeService.KEY_BASS, true)
 
                   bar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -285,6 +285,7 @@ jobs:
           import android.os.Vibrator
           import android.os.VibratorManager
           import androidx.core.app.NotificationCompat
+          import kotlin.math.max
           import kotlin.math.sqrt
 
           class VibeService : Service() {
@@ -393,46 +394,65 @@ jobs:
                   val buf = ShortArray(chunk)
                   val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
                   val hasAmp = vibrator.hasAmplitudeControl()
-                  var lp = 0f
+                  
+                  // فلاتر تنقية للبيس فقط (عزل الترددات فوق 80Hz)
+                  var stage1 = 0f
+                  var stage2 = 0f
+                  val alpha = 0.015f 
+                  
+                  var lastVibeTime = 0L
 
                   while (running) {
                       val n = rec.read(buf, 0, chunk)
                       if (n <= 0) continue
 
-                      val bass = prefs.getBoolean(KEY_BASS, true)
-                      val sens = prefs.getInt(KEY_SENS, 50)
+                      val bassOnly = prefs.getBoolean(KEY_BASS, true)
+                      val sens = prefs.getInt(KEY_SENS, 40) // من 0 إلى 100
 
-                      val alpha = 0.03f
                       var sum = 0.0
                       for (i in 0 until n) {
-                          var s = buf[i] / 32768f
-                          if (bass) {
-                              lp += alpha * (s - lp)
-                              s = lp * 4f
+                          var sample = buf[i] / 32768f
+                          if (bassOnly) {
+                              // فلتر مضاعف للتخلص من أصوات الكلام والآلات الحادة
+                              stage1 += alpha * (sample - stage1)
+                              stage2 += alpha * (stage1 - stage2)
+                              sample = stage2 * 12f // تضخيم البيس المعزول
                           }
-                          sum += (s * s).toDouble()
+                          sum += (sample * sample).toDouble()
                       }
                       val rms = sqrt(sum / n).toFloat()
 
-                      val gain = 1f + sens / 100f * 15f
-                      val level = sqrt((rms * gain).coerceIn(0f, 1f))
-                      val amplitude = (level * 255f).toInt().coerceIn(0, 255)
-
-                      if (amplitude < MIN_AMPLITUDE) {
+                      // عتبة قصوى لمنع الرجة المستمرة: إذا الصوت ضعيف يتجاهله تماماً
+                      val threshold = if (bassOnly) 0.045f else 0.02f
+                      if (rms < threshold) {
                           continue
                       }
 
-                      try {
-                          if (hasAmp) {
-                              vibrator.vibrate(
-                                  VibrationEffect.createOneShot(VIBE_MS, amplitude)
-                              )
-                          } else if (amplitude > 110) {
-                              vibrator.vibrate(
-                                  VibrationEffect.createOneShot(VIBE_MS, VibrationEffect.DEFAULT_AMPLITUDE)
-                              )
+                      // منع تداخل الرجات: ترك فاصل زمني (Cooldown) بين كل نبضة بيس والأخرى
+                      val now = System.currentTimeMillis()
+                      if (now - lastVibeTime < COOLDOWN_MS) {
+                          continue
+                      }
+
+                      // حساب الشدة بالنسبة للحساسية المختارة
+                      val multiplier = 1f + (sens / 100f) * 10f
+                      val effectiveLevel = ((rms - threshold) * multiplier).coerceIn(0f, 1f)
+                      val amplitude = (effectiveLevel * 255f).toInt()
+
+                      if (amplitude > 35) {
+                          try {
+                              if (hasAmp) {
+                                  vibrator.vibrate(
+                                      VibrationEffect.createOneShot(VIBE_PULSE_MS, amplitude)
+                                  )
+                              } else if (amplitude > 130) {
+                                  vibrator.vibrate(
+                                      VibrationEffect.createOneShot(VIBE_PULSE_MS, VibrationEffect.DEFAULT_AMPLITUDE)
+                                  )
+                              }
+                              lastVibeTime = now
+                          } catch (_: Exception) {
                           }
-                      } catch (_: Exception) {
                       }
                   }
               }
@@ -503,8 +523,8 @@ jobs:
                   private const val CHANNEL_ID = "vibe"
                   private const val NOTIF_ID = 1
                   private const val SAMPLE_RATE = 44100
-                  private const val MIN_AMPLITUDE = 12
-                  private const val VIBE_MS = 30L
+                  private const val VIBE_PULSE_MS = 25L // نبضة اهتزاز سريعة ومحكمة
+                  private const val COOLDOWN_MS = 65L   // مهلة فاصلة بين النبضات لمنع الارتجاج المستمر
 
                   @Volatile var isRunning = false
               }
@@ -550,7 +570,7 @@ jobs:
                   android:layout_width="match_parent"
                   android:layout_height="wrap_content"
                   android:max="100"
-                  android:progress="50" />
+                  android:progress="40" />
 
               <CheckBox
                   android:id="@+id/bassCheck"

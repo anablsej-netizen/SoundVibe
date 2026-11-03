@@ -73,8 +73,8 @@ jobs:
                   applicationId = "com.example.soundvibe"
                   minSdk = 29
                   targetSdk = 34
-                  versionCode = 2
-                  versionName = "1.1"
+                  versionCode = 4
+                  versionName = "2.0"
               }
 
               buildTypes {
@@ -145,7 +145,8 @@ jobs:
           import android.os.Bundle
           import android.os.Vibrator
           import android.widget.Button
-          import android.widget.CheckBox
+          import android.widget.RadioButton
+          import android.widget.RadioGroup
           import android.widget.SeekBar
           import android.widget.TextView
           import android.widget.Toast
@@ -188,22 +189,36 @@ jobs:
 
                   statusText = findViewById(R.id.statusText)
                   toggle = findViewById(R.id.toggleButton)
-                  val bar = findViewById<SeekBar>(R.id.sensitivityBar)
-                  val bass = findViewById<CheckBox>(R.id.bassCheck)
+                  val sensBar = findViewById<SeekBar>(R.id.sensitivityBar)
+                  val punchBar = findViewById<SeekBar>(R.id.punchBar)
+                  val pulseBar = findViewById<SeekBar>(R.id.pulseBar)
+                  val modeGroup = findViewById<RadioGroup>(R.id.modeGroup)
+                  val modeSub = findViewById<RadioButton>(R.id.modeSubBass)
+                  val modeKick = findViewById<RadioButton>(R.id.modeKick)
+                  val modeAll = findViewById<RadioButton>(R.id.modeAll)
 
                   val prefs = getSharedPreferences(VibeService.PREFS, MODE_PRIVATE)
-                  bar.progress = prefs.getInt(VibeService.KEY_SENS, 40)
-                  bass.isChecked = prefs.getBoolean(VibeService.KEY_BASS, true)
+                  sensBar.progress = prefs.getInt(VibeService.KEY_SENS, 50)
+                  punchBar.progress = prefs.getInt(VibeService.KEY_PUNCH, 60)
+                  pulseBar.progress = prefs.getInt(VibeService.KEY_PULSE, 25)
 
-                  bar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                      override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
-                          prefs.edit().putInt(VibeService.KEY_SENS, value).apply()
+                  when (prefs.getInt(VibeService.KEY_MODE, 0)) {
+                      0 -> modeSub.isChecked = true
+                      1 -> modeKick.isChecked = true
+                      2 -> modeAll.isChecked = true
+                  }
+
+                  sensBar.setOnSeekBarChangeListener(simpleListener { prefs.edit().putInt(VibeService.KEY_SENS, it).apply() })
+                  punchBar.setOnSeekBarChangeListener(simpleListener { prefs.edit().putInt(VibeService.KEY_PUNCH, it).apply() })
+                  pulseBar.setOnSeekBarChangeListener(simpleListener { prefs.edit().putInt(VibeService.KEY_PULSE, it.coerceAtLeast(15)).apply() })
+
+                  modeGroup.setOnCheckedChangeListener { _, checkedId ->
+                      val mode = when (checkedId) {
+                          R.id.modeSubBass -> 0
+                          R.id.modeKick -> 1
+                          else -> 2
                       }
-                      override fun onStartTrackingTouch(sb: SeekBar?) {}
-                      override fun onStopTrackingTouch(sb: SeekBar?) {}
-                  })
-                  bass.setOnCheckedChangeListener { _, checked ->
-                      prefs.edit().putBoolean(VibeService.KEY_BASS, checked).apply()
+                      prefs.edit().putInt(VibeService.KEY_MODE, mode).apply()
                   }
 
                   toggle.setOnClickListener {
@@ -215,6 +230,12 @@ jobs:
                   }
               }
 
+              private fun simpleListener(onChange: (Int) -> Unit) = object : SeekBar.OnSeekBarChangeListener {
+                  override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) = onChange(value)
+                  override fun onStartTrackingTouch(sb: SeekBar?) {}
+                  override fun onStopTrackingTouch(sb: SeekBar?) {}
+              }
+
               private fun startFlow() {
                   @Suppress("DEPRECATION")
                   val vib = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
@@ -224,13 +245,10 @@ jobs:
                   }
 
                   val needed = mutableListOf<String>()
-                  if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-                      != PackageManager.PERMISSION_GRANTED
-                  ) needed += Manifest.permission.RECORD_AUDIO
-                  if (Build.VERSION.SDK_INT >= 33 &&
-                      ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-                      != PackageManager.PERMISSION_GRANTED
-                  ) needed += Manifest.permission.POST_NOTIFICATIONS
+                  if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
+                      needed += Manifest.permission.RECORD_AUDIO
+                  if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+                      needed += Manifest.permission.POST_NOTIFICATIONS
 
                   if (needed.isEmpty()) requestProjection()
                   else permissionLauncher.launch(needed.toTypedArray())
@@ -331,9 +349,7 @@ jobs:
                   val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
                   projection = mpm.getMediaProjection(resultCode, data)
                   projection?.registerCallback(object : MediaProjection.Callback() {
-                      override fun onStop() {
-                          stopSelf()
-                      }
+                      override fun onStop() { stopSelf() }
                   }, null)
 
                   if (!startCapture()) {
@@ -369,9 +385,7 @@ jobs:
                           .setAudioFormat(format)
                           .setBufferSizeInBytes(maxOf(minBuf, chunk * 2 * 4))
                           .build()
-                  } catch (e: SecurityException) {
-                      return false
-                  } catch (e: UnsupportedOperationException) {
+                  } catch (e: Exception) {
                       return false
                   }
                   if (rec.state != AudioRecord.STATE_INITIALIZED) {
@@ -385,7 +399,7 @@ jobs:
                   rec.startRecording()
                   sendBroadcast(Intent(ACTION_STATE).setPackage(packageName))
 
-                  worker = Thread({ loop(rec, chunk) }, "SoundVibeLoop").also { it.start() }
+                  worker = Thread({ loop(rec, chunk) }, "SoundVibeDSP").also { it.start() }
                   return true
               }
 
@@ -393,59 +407,70 @@ jobs:
                   val buf = ShortArray(chunk)
                   val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
                   val hasAmp = vibrator.hasAmplitudeControl()
-                  
-                  var stage1 = 0f
-                  var stage2 = 0f
-                  val alpha = 0.015f 
-                  var lastVibeTime = 0L
+
+                  var lp1 = 0f
+                  var lp2 = 0f
+                  var avgEnergy = 0.05f
+                  var lastBeatTime = 0L
 
                   while (running) {
                       val n = rec.read(buf, 0, chunk)
                       if (n <= 0) continue
 
-                      val bassOnly = prefs.getBoolean(KEY_BASS, true)
-                      val sens = prefs.getInt(KEY_SENS, 40)
+                      val mode = prefs.getInt(KEY_MODE, 0) // 0: Sub-bass, 1: Kick, 2: All
+                      val sens = prefs.getInt(KEY_SENS, 50)
+                      val punch = prefs.getInt(KEY_PUNCH, 60) // عتبة الضربة
+                      val pulseMs = prefs.getInt(KEY_PULSE, 25).toLong()
+
+                      // معامل الفلترة حسب النمط
+                      val alpha = when (mode) {
+                          0 -> 0.009f // عزل تام تحت ~60Hz
+                          1 -> 0.025f // حتى ~130Hz
+                          else -> 1.0f
+                      }
+                      val boost = when (mode) {
+                          0 -> 24f
+                          1 -> 14f
+                          else -> 1.5f
+                      }
 
                       var sum = 0.0
                       for (i in 0 until n) {
-                          var sample = buf[i] / 32768f
-                          if (bassOnly) {
-                              stage1 += alpha * (sample - stage1)
-                              stage2 += alpha * (stage1 - stage2)
-                              sample = stage2 * 12f
+                          var s = buf[i] / 32768f
+                          if (mode != 2) {
+                              lp1 += alpha * (s - lp1)
+                              lp2 += alpha * (lp1 - lp2)
+                              s = lp2 * boost
                           }
-                          sum += (sample * sample).toDouble()
+                          sum += (s * s).toDouble()
                       }
-                      val rms = sqrt(sum / n).toFloat()
+                      val energy = sqrt(sum / n).toFloat()
 
-                      val threshold = if (bassOnly) 0.045f else 0.02f
-                      if (rms < threshold) {
-                          continue
-                      }
+                      avgEnergy = avgEnergy * 0.94f + energy * 0.06f
+
+                      // حساب متى تعتبر ضربة حادة
+                      val thresholdMultiplier = 1.3f + (punch / 100f) * 1.7f
+                      val dynamicThreshold = avgEnergy * thresholdMultiplier
+                      val minFloor = 0.04f + (punch / 100f) * 0.08f
 
                       val now = System.currentTimeMillis()
-                      if (now - lastVibeTime < COOLDOWN_MS) {
-                          continue
-                      }
+                      val isHit = energy > dynamicThreshold && energy > minFloor
+                      val cooldown = pulseMs + 90L // سكون إجباري بعد كل نبضة
 
-                      val multiplier = 1f + (sens / 100f) * 10f
-                      val effectiveLevel = ((rms - threshold) * multiplier).coerceIn(0f, 1f)
-                      val amplitude = (effectiveLevel * 255f).toInt()
+                      if (isHit && (now - lastBeatTime > cooldown)) {
+                          lastBeatTime = now
+                          val amp = if (hasAmp) {
+                              val sensMultiplier = 0.8f + (sens / 100f) * 1.5f
+                              ((energy * sensMultiplier).coerceIn(0.2f, 1f) * 255f).toInt()
+                          } else 255
 
-                      if (amplitude > 35) {
                           try {
                               if (hasAmp) {
-                                  vibrator.vibrate(
-                                      VibrationEffect.createOneShot(VIBE_PULSE_MS, amplitude)
-                                  )
-                              } else if (amplitude > 130) {
-                                  vibrator.vibrate(
-                                      VibrationEffect.createOneShot(VIBE_PULSE_MS, VibrationEffect.DEFAULT_AMPLITUDE)
-                                  )
+                                  vibrator.vibrate(VibrationEffect.createOneShot(pulseMs, amp))
+                              } else {
+                                  vibrator.vibrate(VibrationEffect.createOneShot(pulseMs, VibrationEffect.DEFAULT_AMPLITUDE))
                               }
-                              lastVibeTime = now
-                          } catch (_: Exception) {
-                          }
+                          } catch (_: Exception) {}
                       }
                   }
               }
@@ -453,13 +478,8 @@ jobs:
               private fun startForegroundCompat() {
                   val nm = getSystemService(NotificationManager::class.java)
                   nm.createNotificationChannel(
-                      NotificationChannel(
-                          CHANNEL_ID,
-                          getString(R.string.notif_channel),
-                          NotificationManager.IMPORTANCE_LOW
-                      )
+                      NotificationChannel(CHANNEL_ID, getString(R.string.notif_channel), NotificationManager.IMPORTANCE_LOW)
                   )
-
                   val stopIntent = Intent(this, VibeService::class.java).setAction(ACTION_STOP)
                   val stopPi = android.app.PendingIntent.getService(
                       this, 0, stopIntent,
@@ -469,7 +489,6 @@ jobs:
                       this, 1, Intent(this, MainActivity::class.java),
                       android.app.PendingIntent.FLAG_IMMUTABLE
                   )
-
                   val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
                       .setSmallIcon(android.R.drawable.ic_lock_silent_mode_off)
                       .setContentTitle(getString(R.string.notif_title))
@@ -480,10 +499,7 @@ jobs:
                       .build()
 
                   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                      startForeground(
-                          NOTIF_ID, notification,
-                          ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-                      )
+                      startForeground(NOTIF_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
                   } else {
                       startForeground(NOTIF_ID, notification)
                   }
@@ -511,13 +527,13 @@ jobs:
 
                   const val PREFS = "soundvibe"
                   const val KEY_SENS = "sensitivity"
-                  const val KEY_BASS = "bass"
+                  const val KEY_PUNCH = "punch"
+                  const val KEY_PULSE = "pulse"
+                  const val KEY_MODE = "mode"
 
                   private const val CHANNEL_ID = "vibe"
                   private const val NOTIF_ID = 1
                   private const val SAMPLE_RATE = 44100
-                  private const val VIBE_PULSE_MS = 25L
-                  private const val COOLDOWN_MS = 65L
 
                   @Volatile var isRunning = false
               }
@@ -526,60 +542,115 @@ jobs:
           mkdir -p "$(dirname 'app/src/main/res/layout/activity_main.xml')"
           cat > 'app/src/main/res/layout/activity_main.xml' <<'EOF_SV'
           <?xml version="1.0" encoding="utf-8"?>
-          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+          <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
               android:layout_width="match_parent"
               android:layout_height="match_parent"
-              android:gravity="center_horizontal"
-              android:orientation="vertical"
-              android:padding="24dp">
+              android:fillViewport="true">
 
-              <TextView
-                  android:id="@+id/statusText"
+              <LinearLayout
                   android:layout_width="match_parent"
                   android:layout_height="wrap_content"
-                  android:layout_marginTop="48dp"
-                  android:gravity="center"
-                  android:text="@string/status_off"
-                  android:textSize="20sp" />
+                  android:orientation="vertical"
+                  android:padding="24dp">
 
-              <Button
-                  android:id="@+id/toggleButton"
-                  android:layout_width="wrap_content"
-                  android:layout_height="64dp"
-                  android:layout_marginTop="32dp"
-                  android:minWidth="200dp"
-                  android:text="@string/start"
-                  android:textSize="18sp" />
+                  <TextView
+                      android:id="@+id/statusText"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="20dp"
+                      android:gravity="center"
+                      android:text="@string/status_off"
+                      android:textSize="20sp" />
 
-              <TextView
-                  android:layout_width="match_parent"
-                  android:layout_height="wrap_content"
-                  android:layout_marginTop="40dp"
-                  android:text="@string/sensitivity"
-                  android:textSize="16sp" />
+                  <Button
+                      android:id="@+id/toggleButton"
+                      android:layout_width="match_parent"
+                      android:layout_height="60dp"
+                      android:layout_marginTop="20dp"
+                      android:text="@string/start"
+                      android:textSize="18sp" />
 
-              <SeekBar
-                  android:id="@+id/sensitivityBar"
-                  android:layout_width="match_parent"
-                  android:layout_height="wrap_content"
-                  android:max="100"
-                  android:progress="40" />
+                  <!-- نمط التردد -->
+                  <TextView
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="28dp"
+                      android:text="@string/freq_mode"
+                      android:textStyle="bold"
+                      android:textSize="16sp" />
 
-              <CheckBox
-                  android:id="@+id/bassCheck"
-                  android:layout_width="match_parent"
-                  android:layout_height="wrap_content"
-                  android:layout_marginTop="16dp"
-                  android:checked="true"
-                  android:text="@string/bass_only" />
+                  <RadioGroup
+                      android:id="@+id/modeGroup"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="8dp">
 
-              <TextView
-                  android:layout_width="match_parent"
-                  android:layout_height="wrap_content"
-                  android:layout_marginTop="40dp"
-                  android:text="@string/hint"
-                  android:textSize="13sp" />
-          </LinearLayout>
+                      <RadioButton
+                          android:id="@+id/modeSubBass"
+                          android:layout_width="wrap_content"
+                          android:layout_height="wrap_content"
+                          android:text="@string/mode_sub" />
+
+                      <RadioButton
+                          android:id="@+id/modeKick"
+                          android:layout_width="wrap_content"
+                          android:layout_height="wrap_content"
+                          android:text="@string/mode_kick" />
+
+                      <RadioButton
+                          android:id="@+id/modeAll"
+                          android:layout_width="wrap_content"
+                          android:layout_height="wrap_content"
+                          android:text="@string/mode_all" />
+                  </RadioGroup>
+
+                  <!-- قوة ضربة البيز -->
+                  <TextView
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="20dp"
+                      android:text="@string/punch_threshold"
+                      android:textSize="15sp" />
+
+                  <SeekBar
+                      android:id="@+id/punchBar"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:max="100"
+                      android:progress="60" />
+
+                  <!-- سرعة/مدة النبضة -->
+                  <TextView
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="16dp"
+                      android:text="@string/pulse_speed"
+                      android:textSize="15sp" />
+
+                  <SeekBar
+                      android:id="@+id/pulseBar"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:max="60"
+                      android:progress="25" />
+
+                  <!-- الحساسية العامة -->
+                  <TextView
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="16dp"
+                      android:text="@string/sensitivity"
+                      android:textSize="15sp" />
+
+                  <SeekBar
+                      android:id="@+id/sensitivityBar"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:max="100"
+                      android:progress="50" />
+
+              </LinearLayout>
+          </ScrollView>
           EOF_SV
           mkdir -p "$(dirname 'app/src/main/res/values/strings.xml')"
           cat > 'app/src/main/res/values/strings.xml' <<'EOF_SV'
@@ -589,15 +660,19 @@ jobs:
               <string name="start">تشغيل</string>
               <string name="stop">إيقاف</string>
               <string name="status_off">متوقف</string>
-              <string name="status_on">شغّال — أي صوت من الجهاز رح يهز الهاتف</string>
-              <string name="sensitivity">الحساسية</string>
-              <string name="bass_only">التركيز على البيس (أنسب للرجاج)</string>
+              <string name="status_on">شغّال — التقاط البيز نشط</string>
+              <string name="freq_mode">نطاق التردد (نوع الصوت):</string>
+              <string name="mode_sub">بيز عميق فقط (Sub-Bass &lt; 60Hz - الأنسب للرجاج)</string>
+              <string name="mode_kick">ضربات الطبل والإيقاع (Kick &lt; 130Hz)</string>
+              <string name="mode_all">كامل الصوت (كل الترددات)</string>
+              <string name="punch_threshold">عتبة الضربة (ارفع السلايدر لمنع الرجة المستمرة):</string>
+              <string name="pulse_speed">مدة النبضة (يسار: نقرة سريعة | يمين: هزة أطول):</string>
+              <string name="sensitivity">حساسية الالتقاط العامة:</string>
               <string name="notif_title">صوت لرجاج شغّال</string>
-              <string name="notif_text">الهاتف يهتز مع الصوت الطالع من الجهاز</string>
+              <string name="notif_text">الهاتف يهتز مع ضربات البيز</string>
               <string name="notif_channel">خدمة الاهتزاز</string>
               <string name="mic_denied">لازم تعطي صلاحية الصوت عشان يشتغل التطبيق</string>
               <string name="no_vibrator">هاتفك ما فيه محرك اهتزاز</string>
-              <string name="hint">ملاحظة: بعض التطبيقات بتمنع التقاط صوتها (مثل بعض تطبيقات المكالمات والمحتوى المحمي)، وقتها ما رح يهتز الهاتف معها.</string>
           </resources>
           EOF_SV
           mkdir -p "$(dirname 'app/src/main/res/values/themes.xml')"
@@ -611,13 +686,12 @@ jobs:
       - name: Build APK with Gradle
         run: gradle :app:assembleDebug
 
-      - name: Locate and Prepare APK
+      - name: Prepare APK Output
         run: |
           mkdir -p output_apk
           find . -name "*.apk" -exec cp {} output_apk/SoundVibe.apk \;
-          ls -la output_apk/
 
-      - name: Upload Artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: SoundVibe-APK

@@ -73,8 +73,8 @@ jobs:
                   applicationId = "com.example.soundvibe"
                   minSdk = 29
                   targetSdk = 34
-                  versionCode = 3
-                  versionName = "1.2"
+                  versionCode = 2
+                  versionName = "1.1"
               }
 
               buildTypes {
@@ -145,7 +145,7 @@ jobs:
           import android.os.Bundle
           import android.os.Vibrator
           import android.widget.Button
-          import android.widget.RadioGroup
+          import android.widget.CheckBox
           import android.widget.SeekBar
           import android.widget.TextView
           import android.widget.Toast
@@ -188,45 +188,22 @@ jobs:
 
                   statusText = findViewById(R.id.statusText)
                   toggle = findViewById(R.id.toggleButton)
-                  val sensBar = findViewById<SeekBar>(R.id.sensitivityBar)
-                  val strengthBar = findViewById<SeekBar>(R.id.strengthBar)
-                  val modeGroup = findViewById<RadioGroup>(R.id.modeGroup)
+                  val bar = findViewById<SeekBar>(R.id.sensitivityBar)
+                  val bass = findViewById<CheckBox>(R.id.bassCheck)
 
                   val prefs = getSharedPreferences(VibeService.PREFS, MODE_PRIVATE)
-                  sensBar.progress = prefs.getInt(VibeService.KEY_SENS, 25)
-                  strengthBar.progress = prefs.getInt(VibeService.KEY_STRENGTH, 70)
+                  bar.progress = prefs.getInt(VibeService.KEY_SENS, 40)
+                  bass.isChecked = prefs.getBoolean(VibeService.KEY_BASS, true)
 
-                  when (prefs.getInt(VibeService.KEY_MODE, VibeService.MODE_SUB_BASS)) {
-                      VibeService.MODE_SUB_BASS -> modeGroup.check(R.id.modeSubBass)
-                      VibeService.MODE_PUNCHY -> modeGroup.check(R.id.modePunchy)
-                      VibeService.MODE_GAMING -> modeGroup.check(R.id.modeGaming)
-                      VibeService.MODE_FULL -> modeGroup.check(R.id.modeFull)
-                  }
-
-                  sensBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                  bar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                       override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
                           prefs.edit().putInt(VibeService.KEY_SENS, value).apply()
                       }
                       override fun onStartTrackingTouch(sb: SeekBar?) {}
                       override fun onStopTrackingTouch(sb: SeekBar?) {}
                   })
-
-                  strengthBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                      override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
-                          prefs.edit().putInt(VibeService.KEY_STRENGTH, value).apply()
-                      }
-                      override fun onStartTrackingTouch(sb: SeekBar?) {}
-                      override fun onStopTrackingTouch(sb: SeekBar?) {}
-                  })
-
-                  modeGroup.setOnCheckedChangeListener { _, checkedId ->
-                      val mode = when (checkedId) {
-                          R.id.modePunchy -> VibeService.MODE_PUNCHY
-                          R.id.modeGaming -> VibeService.MODE_GAMING
-                          R.id.modeFull -> VibeService.MODE_FULL
-                          else -> VibeService.MODE_SUB_BASS
-                      }
-                      prefs.edit().putInt(VibeService.KEY_MODE, mode).apply()
+                  bass.setOnCheckedChangeListener { _, checked ->
+                      prefs.edit().putBoolean(VibeService.KEY_BASS, checked).apply()
                   }
 
                   toggle.setOnClickListener {
@@ -323,4 +300,326 @@ jobs:
 
               override fun onCreate() {
                   super.onCreate()
-                  vibrator = if (Build.VERSION.SDK
+                  vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                      (getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager).defaultVibrator
+                  } else {
+                      @Suppress("DEPRECATION")
+                      getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+                  }
+              }
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  if (intent?.action == ACTION_STOP) {
+                      stopSelf()
+                      return START_NOT_STICKY
+                  }
+
+                  val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, 0) ?: 0
+                  val data: Intent? = if (Build.VERSION.SDK_INT >= 33) {
+                      intent?.getParcelableExtra(EXTRA_DATA, Intent::class.java)
+                  } else {
+                      @Suppress("DEPRECATION")
+                      intent?.getParcelableExtra(EXTRA_DATA)
+                  }
+                  if (data == null || running) {
+                      if (data == null) stopSelf()
+                      return START_NOT_STICKY
+                  }
+
+                  startForegroundCompat()
+
+                  val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                  projection = mpm.getMediaProjection(resultCode, data)
+                  projection?.registerCallback(object : MediaProjection.Callback() {
+                      override fun onStop() {
+                          stopSelf()
+                      }
+                  }, null)
+
+                  if (!startCapture()) {
+                      stopSelf()
+                      return START_NOT_STICKY
+                  }
+                  return START_NOT_STICKY
+              }
+
+              private fun startCapture(): Boolean {
+                  val proj = projection ?: return false
+
+                  val config = AudioPlaybackCaptureConfiguration.Builder(proj)
+                      .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                      .addMatchingUsage(AudioAttributes.USAGE_GAME)
+                      .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+                      .build()
+
+                  val format = AudioFormat.Builder()
+                      .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                      .setSampleRate(SAMPLE_RATE)
+                      .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
+                      .build()
+
+                  val minBuf = AudioRecord.getMinBufferSize(
+                      SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
+                  )
+                  val chunk = SAMPLE_RATE / 50
+
+                  val rec = try {
+                      AudioRecord.Builder()
+                          .setAudioPlaybackCaptureConfig(config)
+                          .setAudioFormat(format)
+                          .setBufferSizeInBytes(maxOf(minBuf, chunk * 2 * 4))
+                          .build()
+                  } catch (e: SecurityException) {
+                      return false
+                  } catch (e: UnsupportedOperationException) {
+                      return false
+                  }
+                  if (rec.state != AudioRecord.STATE_INITIALIZED) {
+                      rec.release()
+                      return false
+                  }
+
+                  recorder = rec
+                  running = true
+                  isRunning = true
+                  rec.startRecording()
+                  sendBroadcast(Intent(ACTION_STATE).setPackage(packageName))
+
+                  worker = Thread({ loop(rec, chunk) }, "SoundVibeLoop").also { it.start() }
+                  return true
+              }
+
+              private fun loop(rec: AudioRecord, chunk: Int) {
+                  val buf = ShortArray(chunk)
+                  val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+                  val hasAmp = vibrator.hasAmplitudeControl()
+                  
+                  var stage1 = 0f
+                  var stage2 = 0f
+                  val alpha = 0.015f 
+                  var lastVibeTime = 0L
+
+                  while (running) {
+                      val n = rec.read(buf, 0, chunk)
+                      if (n <= 0) continue
+
+                      val bassOnly = prefs.getBoolean(KEY_BASS, true)
+                      val sens = prefs.getInt(KEY_SENS, 40)
+
+                      var sum = 0.0
+                      for (i in 0 until n) {
+                          var sample = buf[i] / 32768f
+                          if (bassOnly) {
+                              stage1 += alpha * (sample - stage1)
+                              stage2 += alpha * (stage1 - stage2)
+                              sample = stage2 * 12f
+                          }
+                          sum += (sample * sample).toDouble()
+                      }
+                      val rms = sqrt(sum / n).toFloat()
+
+                      val threshold = if (bassOnly) 0.045f else 0.02f
+                      if (rms < threshold) {
+                          continue
+                      }
+
+                      val now = System.currentTimeMillis()
+                      if (now - lastVibeTime < COOLDOWN_MS) {
+                          continue
+                      }
+
+                      val multiplier = 1f + (sens / 100f) * 10f
+                      val effectiveLevel = ((rms - threshold) * multiplier).coerceIn(0f, 1f)
+                      val amplitude = (effectiveLevel * 255f).toInt()
+
+                      if (amplitude > 35) {
+                          try {
+                              if (hasAmp) {
+                                  vibrator.vibrate(
+                                      VibrationEffect.createOneShot(VIBE_PULSE_MS, amplitude)
+                                  )
+                              } else if (amplitude > 130) {
+                                  vibrator.vibrate(
+                                      VibrationEffect.createOneShot(VIBE_PULSE_MS, VibrationEffect.DEFAULT_AMPLITUDE)
+                                  )
+                              }
+                              lastVibeTime = now
+                          } catch (_: Exception) {
+                          }
+                      }
+                  }
+              }
+
+              private fun startForegroundCompat() {
+                  val nm = getSystemService(NotificationManager::class.java)
+                  nm.createNotificationChannel(
+                      NotificationChannel(
+                          CHANNEL_ID,
+                          getString(R.string.notif_channel),
+                          NotificationManager.IMPORTANCE_LOW
+                      )
+                  )
+
+                  val stopIntent = Intent(this, VibeService::class.java).setAction(ACTION_STOP)
+                  val stopPi = android.app.PendingIntent.getService(
+                      this, 0, stopIntent,
+                      android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
+                  )
+                  val openPi = android.app.PendingIntent.getActivity(
+                      this, 1, Intent(this, MainActivity::class.java),
+                      android.app.PendingIntent.FLAG_IMMUTABLE
+                  )
+
+                  val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
+                      .setSmallIcon(android.R.drawable.ic_lock_silent_mode_off)
+                      .setContentTitle(getString(R.string.notif_title))
+                      .setContentText(getString(R.string.notif_text))
+                      .setContentIntent(openPi)
+                      .addAction(0, getString(R.string.stop), stopPi)
+                      .setOngoing(true)
+                      .build()
+
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                      startForeground(
+                          NOTIF_ID, notification,
+                          ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                      )
+                  } else {
+                      startForeground(NOTIF_ID, notification)
+                  }
+              }
+
+              override fun onDestroy() {
+                  running = false
+                  try { worker?.join(300) } catch (_: InterruptedException) {}
+                  try { recorder?.stop() } catch (_: Exception) {}
+                  recorder?.release()
+                  recorder = null
+                  projection?.stop()
+                  projection = null
+                  vibrator.cancel()
+                  isRunning = false
+                  sendBroadcast(Intent(ACTION_STATE).setPackage(packageName))
+                  super.onDestroy()
+              }
+
+              companion object {
+                  const val ACTION_STOP = "com.example.soundvibe.STOP"
+                  const val ACTION_STATE = "com.example.soundvibe.STATE"
+                  const val EXTRA_RESULT_CODE = "result_code"
+                  const val EXTRA_DATA = "data"
+
+                  const val PREFS = "soundvibe"
+                  const val KEY_SENS = "sensitivity"
+                  const val KEY_BASS = "bass"
+
+                  private const val CHANNEL_ID = "vibe"
+                  private const val NOTIF_ID = 1
+                  private const val SAMPLE_RATE = 44100
+                  private const val VIBE_PULSE_MS = 25L
+                  private const val COOLDOWN_MS = 65L
+
+                  @Volatile var isRunning = false
+              }
+          }
+          EOF_SV
+          mkdir -p "$(dirname 'app/src/main/res/layout/activity_main.xml')"
+          cat > 'app/src/main/res/layout/activity_main.xml' <<'EOF_SV'
+          <?xml version="1.0" encoding="utf-8"?>
+          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:gravity="center_horizontal"
+              android:orientation="vertical"
+              android:padding="24dp">
+
+              <TextView
+                  android:id="@+id/statusText"
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:layout_marginTop="48dp"
+                  android:gravity="center"
+                  android:text="@string/status_off"
+                  android:textSize="20sp" />
+
+              <Button
+                  android:id="@+id/toggleButton"
+                  android:layout_width="wrap_content"
+                  android:layout_height="64dp"
+                  android:layout_marginTop="32dp"
+                  android:minWidth="200dp"
+                  android:text="@string/start"
+                  android:textSize="18sp" />
+
+              <TextView
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:layout_marginTop="40dp"
+                  android:text="@string/sensitivity"
+                  android:textSize="16sp" />
+
+              <SeekBar
+                  android:id="@+id/sensitivityBar"
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:max="100"
+                  android:progress="40" />
+
+              <CheckBox
+                  android:id="@+id/bassCheck"
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:layout_marginTop="16dp"
+                  android:checked="true"
+                  android:text="@string/bass_only" />
+
+              <TextView
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:layout_marginTop="40dp"
+                  android:text="@string/hint"
+                  android:textSize="13sp" />
+          </LinearLayout>
+          EOF_SV
+          mkdir -p "$(dirname 'app/src/main/res/values/strings.xml')"
+          cat > 'app/src/main/res/values/strings.xml' <<'EOF_SV'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">صوت لرجاج</string>
+              <string name="start">تشغيل</string>
+              <string name="stop">إيقاف</string>
+              <string name="status_off">متوقف</string>
+              <string name="status_on">شغّال — أي صوت من الجهاز رح يهز الهاتف</string>
+              <string name="sensitivity">الحساسية</string>
+              <string name="bass_only">التركيز على البيس (أنسب للرجاج)</string>
+              <string name="notif_title">صوت لرجاج شغّال</string>
+              <string name="notif_text">الهاتف يهتز مع الصوت الطالع من الجهاز</string>
+              <string name="notif_channel">خدمة الاهتزاز</string>
+              <string name="mic_denied">لازم تعطي صلاحية الصوت عشان يشتغل التطبيق</string>
+              <string name="no_vibrator">هاتفك ما فيه محرك اهتزاز</string>
+              <string name="hint">ملاحظة: بعض التطبيقات بتمنع التقاط صوتها (مثل بعض تطبيقات المكالمات والمحتوى المحمي)، وقتها ما رح يهتز الهاتف معها.</string>
+          </resources>
+          EOF_SV
+          mkdir -p "$(dirname 'app/src/main/res/values/themes.xml')"
+          cat > 'app/src/main/res/values/themes.xml' <<'EOF_SV'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="Theme.SoundVibe" parent="Theme.Material3.DayNight.NoActionBar" />
+          </resources>
+          EOF_SV
+
+      - name: Build APK with Gradle
+        run: gradle :app:assembleDebug
+
+      - name: Locate and Prepare APK
+        run: |
+          mkdir -p output_apk
+          find . -name "*.apk" -exec cp {} output_apk/SoundVibe.apk \;
+          ls -la output_apk/
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SoundVibe-APK
+          path: output_apk/SoundVibe.apk
+          if-no-files-found: error

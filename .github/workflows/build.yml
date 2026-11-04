@@ -73,8 +73,8 @@ jobs:
                   applicationId = "com.example.soundvibe"
                   minSdk = 29
                   targetSdk = 34
-                  versionCode = 4
-                  versionName = "2.0"
+                  versionCode = 5
+                  versionName = "2.5"
               }
 
               buildTypes {
@@ -107,6 +107,7 @@ jobs:
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
               <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
               <application
                   android:allowBackup="true"
@@ -130,6 +131,17 @@ jobs:
               </application>
           </manifest>
           EOF_SV
+          mkdir -p "$(dirname 'app/src/main/res/drawable/edge_glow_border.xml')"
+          cat > 'app/src/main/res/drawable/edge_glow_border.xml' <<'EOF_SV'
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android"
+              android:shape="rectangle">
+              <stroke
+                  android:width="12dp"
+                  android:color="#FF00E5FF" />
+              <solid android:color="#1A00E5FF" />
+          </shape>
+          EOF_SV
           mkdir -p "$(dirname 'app/src/main/java/com/example/soundvibe/MainActivity.kt')"
           cat > 'app/src/main/java/com/example/soundvibe/MainActivity.kt' <<'EOF_SV'
           package com.example.soundvibe
@@ -141,10 +153,13 @@ jobs:
           import android.content.IntentFilter
           import android.content.pm.PackageManager
           import android.media.projection.MediaProjectionManager
+          import android.net.Uri
           import android.os.Build
           import android.os.Bundle
           import android.os.Vibrator
+          import android.provider.Settings
           import android.widget.Button
+          import android.widget.CheckBox
           import android.widget.RadioButton
           import android.widget.RadioGroup
           import android.widget.SeekBar
@@ -177,7 +192,7 @@ jobs:
               private val permissionLauncher =
                   registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
                       if (grants[Manifest.permission.RECORD_AUDIO] == true) {
-                          requestProjection()
+                          checkOverlayAndStart()
                       } else {
                           Toast.makeText(this, R.string.mic_denied, Toast.LENGTH_LONG).show()
                       }
@@ -196,11 +211,13 @@ jobs:
                   val modeSub = findViewById<RadioButton>(R.id.modeSubBass)
                   val modeKick = findViewById<RadioButton>(R.id.modeKick)
                   val modeAll = findViewById<RadioButton>(R.id.modeAll)
+                  val edgeCheck = findViewById<CheckBox>(R.id.edgeGlowCheck)
 
                   val prefs = getSharedPreferences(VibeService.PREFS, MODE_PRIVATE)
                   sensBar.progress = prefs.getInt(VibeService.KEY_SENS, 50)
                   punchBar.progress = prefs.getInt(VibeService.KEY_PUNCH, 60)
                   pulseBar.progress = prefs.getInt(VibeService.KEY_PULSE, 25)
+                  edgeCheck.isChecked = prefs.getBoolean(VibeService.KEY_EDGE, true)
 
                   when (prefs.getInt(VibeService.KEY_MODE, 0)) {
                       0 -> modeSub.isChecked = true
@@ -211,6 +228,12 @@ jobs:
                   sensBar.setOnSeekBarChangeListener(simpleListener { prefs.edit().putInt(VibeService.KEY_SENS, it).apply() })
                   punchBar.setOnSeekBarChangeListener(simpleListener { prefs.edit().putInt(VibeService.KEY_PUNCH, it).apply() })
                   pulseBar.setOnSeekBarChangeListener(simpleListener { prefs.edit().putInt(VibeService.KEY_PULSE, it.coerceAtLeast(15)).apply() })
+                  edgeCheck.setOnCheckedChangeListener { _, checked ->
+                      prefs.edit().putBoolean(VibeService.KEY_EDGE, checked).apply()
+                      if (checked && !Settings.canDrawOverlays(this)) {
+                          askOverlayPermission()
+                      }
+                  }
 
                   modeGroup.setOnCheckedChangeListener { _, checkedId ->
                       val mode = when (checkedId) {
@@ -236,7 +259,22 @@ jobs:
                   override fun onStopTrackingTouch(sb: SeekBar?) {}
               }
 
+              private fun askOverlayPermission() {
+                  val intent = Intent(
+                      Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                      Uri.parse("package:$packageName")
+                  )
+                  startActivity(intent)
+                  Toast.makeText(this, "فعّل إذن الظهور فوق التطبيقات لتشغيل إضاءة الحواف", Toast.LENGTH_LONG).show()
+              }
+
               private fun startFlow() {
+                  val prefs = getSharedPreferences(VibeService.PREFS, MODE_PRIVATE)
+                  if (prefs.getBoolean(VibeService.KEY_EDGE, true) && !Settings.canDrawOverlays(this)) {
+                      askOverlayPermission()
+                      return
+                  }
+
                   @Suppress("DEPRECATION")
                   val vib = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
                   if (!vib.hasVibrator()) {
@@ -250,11 +288,11 @@ jobs:
                   if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
                       needed += Manifest.permission.POST_NOTIFICATIONS
 
-                  if (needed.isEmpty()) requestProjection()
+                  if (needed.isEmpty()) checkOverlayAndStart()
                   else permissionLauncher.launch(needed.toTypedArray())
               }
 
-              private fun requestProjection() {
+              private fun checkOverlayAndStart() {
                   val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
                   projectionLauncher.launch(mpm.createScreenCaptureIntent())
               }
@@ -291,6 +329,7 @@ jobs:
           import android.content.Context
           import android.content.Intent
           import android.content.pm.ServiceInfo
+          import android.graphics.PixelFormat
           import android.media.AudioAttributes
           import android.media.AudioFormat
           import android.media.AudioPlaybackCaptureConfiguration
@@ -298,10 +337,15 @@ jobs:
           import android.media.projection.MediaProjection
           import android.media.projection.MediaProjectionManager
           import android.os.Build
+          import android.os.Handler
           import android.os.IBinder
+          import android.os.Looper
           import android.os.VibrationEffect
           import android.os.Vibrator
           import android.os.VibratorManager
+          import android.provider.Settings
+          import android.view.View
+          import android.view.WindowManager
           import androidx.core.app.NotificationCompat
           import kotlin.math.sqrt
 
@@ -313,6 +357,9 @@ jobs:
               @Volatile private var running = false
 
               private lateinit var vibrator: Vibrator
+              private var windowManager: WindowManager? = null
+              private var overlayView: View? = null
+              private val mainHandler = Handler(Looper.getMainLooper())
 
               override fun onBind(intent: Intent?): IBinder? = null
 
@@ -323,6 +370,47 @@ jobs:
                   } else {
                       @Suppress("DEPRECATION")
                       getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+                  }
+                  setupOverlay()
+              }
+
+              private fun setupOverlay() {
+                  if (!Settings.canDrawOverlays(this)) return
+                  try {
+                      windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+                      val params = WindowManager.LayoutParams(
+                          WindowManager.LayoutParams.MATCH_PARENT,
+                          WindowManager.LayoutParams.MATCH_PARENT,
+                          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                              WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                          else
+                              @Suppress("DEPRECATION")
+                              WindowManager.LayoutParams.TYPE_PHONE,
+                          WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                                  WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                                  WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                                  WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                          PixelFormat.TRANSLUCENT
+                      )
+                      overlayView = View(this).apply {
+                          setBackgroundResource(R.drawable.edge_glow_border)
+                          visibility = View.GONE
+                      }
+                      windowManager?.addView(overlayView, params)
+                  } catch (_: Exception) {}
+              }
+
+              private fun triggerEdgeGlow(durationMs: Long) {
+                  overlayView?.let { view ->
+                      mainHandler.post {
+                          view.visibility = View.VISIBLE
+                          view.alpha = 1.0f
+                      }
+                      mainHandler.postDelayed({
+                          view.animate().alpha(0f).setDuration(durationMs).withEndAction {
+                              view.visibility = View.GONE
+                          }.start()
+                      }, durationMs)
                   }
               }
 
@@ -417,15 +505,15 @@ jobs:
                       val n = rec.read(buf, 0, chunk)
                       if (n <= 0) continue
 
-                      val mode = prefs.getInt(KEY_MODE, 0) // 0: Sub-bass, 1: Kick, 2: All
+                      val mode = prefs.getInt(KEY_MODE, 0)
                       val sens = prefs.getInt(KEY_SENS, 50)
-                      val punch = prefs.getInt(KEY_PUNCH, 60) // عتبة الضربة
+                      val punch = prefs.getInt(KEY_PUNCH, 60)
                       val pulseMs = prefs.getInt(KEY_PULSE, 25).toLong()
+                      val edgeEnabled = prefs.getBoolean(KEY_EDGE, true)
 
-                      // معامل الفلترة حسب النمط
                       val alpha = when (mode) {
-                          0 -> 0.009f // عزل تام تحت ~60Hz
-                          1 -> 0.025f // حتى ~130Hz
+                          0 -> 0.009f
+                          1 -> 0.025f
                           else -> 1.0f
                       }
                       val boost = when (mode) {
@@ -448,14 +536,13 @@ jobs:
 
                       avgEnergy = avgEnergy * 0.94f + energy * 0.06f
 
-                      // حساب متى تعتبر ضربة حادة
                       val thresholdMultiplier = 1.3f + (punch / 100f) * 1.7f
                       val dynamicThreshold = avgEnergy * thresholdMultiplier
                       val minFloor = 0.04f + (punch / 100f) * 0.08f
 
                       val now = System.currentTimeMillis()
                       val isHit = energy > dynamicThreshold && energy > minFloor
-                      val cooldown = pulseMs + 90L // سكون إجباري بعد كل نبضة
+                      val cooldown = pulseMs + 90L
 
                       if (isHit && (now - lastBeatTime > cooldown)) {
                           lastBeatTime = now
@@ -471,6 +558,10 @@ jobs:
                                   vibrator.vibrate(VibrationEffect.createOneShot(pulseMs, VibrationEffect.DEFAULT_AMPLITUDE))
                               }
                           } catch (_: Exception) {}
+
+                          if (edgeEnabled) {
+                              triggerEdgeGlow(pulseMs + 35L)
+                          }
                       }
                   }
               }
@@ -515,6 +606,10 @@ jobs:
                   projection = null
                   vibrator.cancel()
                   isRunning = false
+                  overlayView?.let {
+                      windowManager?.removeView(it)
+                      overlayView = null
+                  }
                   sendBroadcast(Intent(ACTION_STATE).setPackage(packageName))
                   super.onDestroy()
               }
@@ -530,6 +625,7 @@ jobs:
                   const val KEY_PUNCH = "punch"
                   const val KEY_PULSE = "pulse"
                   const val KEY_MODE = "mode"
+                  const val KEY_EDGE = "edge_glow"
 
                   private const val CHANNEL_ID = "vibe"
                   private const val NOTIF_ID = 1
@@ -570,11 +666,22 @@ jobs:
                       android:text="@string/start"
                       android:textSize="18sp" />
 
+                  <!-- تأثيرات الشاشة -->
+                  <CheckBox
+                      android:id="@+id/edgeGlowCheck"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="24dp"
+                      android:checked="true"
+                      android:text="@string/edge_glow_label"
+                      android:textStyle="bold"
+                      android:textSize="16sp" />
+
                   <!-- نمط التردد -->
                   <TextView
                       android:layout_width="match_parent"
                       android:layout_height="wrap_content"
-                      android:layout_marginTop="28dp"
+                      android:layout_marginTop="20dp"
                       android:text="@string/freq_mode"
                       android:textStyle="bold"
                       android:textSize="16sp" />
@@ -661,15 +768,16 @@ jobs:
               <string name="stop">إيقاف</string>
               <string name="status_off">متوقف</string>
               <string name="status_on">شغّال — التقاط البيز نشط</string>
+              <string name="edge_glow_label">إضاءة حواف الشاشة مع ضربة البيز (Neon Edge Glow)</string>
               <string name="freq_mode">نطاق التردد (نوع الصوت):</string>
               <string name="mode_sub">بيز عميق فقط (Sub-Bass &lt; 60Hz - الأنسب للرجاج)</string>
               <string name="mode_kick">ضربات الطبل والإيقاع (Kick &lt; 130Hz)</string>
               <string name="mode_all">كامل الصوت (كل الترددات)</string>
               <string name="punch_threshold">عتبة الضربة (ارفع السلايدر لمنع الرجة المستمرة):</string>
-              <string name="pulse_speed">مدة النبضة (يسار: نقرة سريعة | يمين: هزة أطول):</string>
+              <string name="pulse_speed">مدة النبضة والإضاءة (يسار: نقرة سريعة | يمين: أطول):</string>
               <string name="sensitivity">حساسية الالتقاط العامة:</string>
               <string name="notif_title">صوت لرجاج شغّال</string>
-              <string name="notif_text">الهاتف يهتز مع ضربات البيز</string>
+              <string name="notif_text">الهاتف يهتز ويضيء مع ضربات البيز</string>
               <string name="notif_channel">خدمة الاهتزاز</string>
               <string name="mic_denied">لازم تعطي صلاحية الصوت عشان يشتغل التطبيق</string>
               <string name="no_vibrator">هاتفك ما فيه محرك اهتزاز</string>

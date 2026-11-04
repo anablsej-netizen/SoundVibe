@@ -73,8 +73,8 @@ jobs:
                   applicationId = "com.example.soundvibe"
                   minSdk = 29
                   targetSdk = 34
-                  versionCode = 5
-                  versionName = "2.5"
+                  versionCode = 7
+                  versionName = "4.0"
               }
 
               buildTypes {
@@ -130,17 +130,6 @@ jobs:
                       android:foregroundServiceType="mediaProjection" />
               </application>
           </manifest>
-          EOF_SV
-          mkdir -p "$(dirname 'app/src/main/res/drawable/edge_glow_border.xml')"
-          cat > 'app/src/main/res/drawable/edge_glow_border.xml' <<'EOF_SV'
-          <?xml version="1.0" encoding="utf-8"?>
-          <shape xmlns:android="http://schemas.android.com/apk/res/android"
-              android:shape="rectangle">
-              <stroke
-                  android:width="12dp"
-                  android:color="#FF00E5FF" />
-              <solid android:color="#1A00E5FF" />
-          </shape>
           EOF_SV
           mkdir -p "$(dirname 'app/src/main/java/com/example/soundvibe/MainActivity.kt')"
           cat > 'app/src/main/java/com/example/soundvibe/MainActivity.kt' <<'EOF_SV'
@@ -208,31 +197,56 @@ jobs:
                   val punchBar = findViewById<SeekBar>(R.id.punchBar)
                   val pulseBar = findViewById<SeekBar>(R.id.pulseBar)
                   val modeGroup = findViewById<RadioGroup>(R.id.modeGroup)
-                  val modeSub = findViewById<RadioButton>(R.id.modeSubBass)
-                  val modeKick = findViewById<RadioButton>(R.id.modeKick)
-                  val modeAll = findViewById<RadioButton>(R.id.modeAll)
+
                   val edgeCheck = findViewById<CheckBox>(R.id.edgeGlowCheck)
+                  val eqCheck = findViewById<CheckBox>(R.id.eqCheck)
+                  val glowModeGroup = findViewById<RadioGroup>(R.id.glowModeGroup)
+                  val widthBar = findViewById<SeekBar>(R.id.edgeWidthBar)
 
                   val prefs = getSharedPreferences(VibeService.PREFS, MODE_PRIVATE)
                   sensBar.progress = prefs.getInt(VibeService.KEY_SENS, 50)
                   punchBar.progress = prefs.getInt(VibeService.KEY_PUNCH, 60)
                   pulseBar.progress = prefs.getInt(VibeService.KEY_PULSE, 25)
                   edgeCheck.isChecked = prefs.getBoolean(VibeService.KEY_EDGE, true)
+                  eqCheck.isChecked = prefs.getBoolean(VibeService.KEY_EQ, true)
+                  widthBar.progress = prefs.getInt(VibeService.KEY_EDGE_WIDTH, 12)
 
                   when (prefs.getInt(VibeService.KEY_MODE, 0)) {
-                      0 -> modeSub.isChecked = true
-                      1 -> modeKick.isChecked = true
-                      2 -> modeAll.isChecked = true
+                      0 -> findViewById<RadioButton>(R.id.modeSubBass).isChecked = true
+                      1 -> findViewById<RadioButton>(R.id.modeKick).isChecked = true
+                      2 -> findViewById<RadioButton>(R.id.modeAll).isChecked = true
+                  }
+
+                  when (prefs.getInt(VibeService.KEY_GLOW_STYLE, 1)) {
+                      0 -> findViewById<RadioButton>(R.id.styleStatic).isChecked = true
+                      1 -> findViewById<RadioButton>(R.id.styleDisco).isChecked = true
+                      2 -> findViewById<RadioButton>(R.id.styleRainbow).isChecked = true
+                      3 -> findViewById<RadioButton>(R.id.styleStrobe).isChecked = true
                   }
 
                   sensBar.setOnSeekBarChangeListener(simpleListener { prefs.edit().putInt(VibeService.KEY_SENS, it).apply() })
                   punchBar.setOnSeekBarChangeListener(simpleListener { prefs.edit().putInt(VibeService.KEY_PUNCH, it).apply() })
                   pulseBar.setOnSeekBarChangeListener(simpleListener { prefs.edit().putInt(VibeService.KEY_PULSE, it.coerceAtLeast(15)).apply() })
+                  widthBar.setOnSeekBarChangeListener(simpleListener { prefs.edit().putInt(VibeService.KEY_EDGE_WIDTH, it.coerceAtLeast(4)).apply() })
+
+                  glowModeGroup.setOnCheckedChangeListener { _, id ->
+                      val style = when (id) {
+                          R.id.styleStatic -> 0
+                          R.id.styleDisco -> 1
+                          R.id.styleRainbow -> 2
+                          else -> 3
+                      }
+                      prefs.edit().putInt(VibeService.KEY_GLOW_STYLE, style).apply()
+                  }
+
                   edgeCheck.setOnCheckedChangeListener { _, checked ->
                       prefs.edit().putBoolean(VibeService.KEY_EDGE, checked).apply()
-                      if (checked && !Settings.canDrawOverlays(this)) {
-                          askOverlayPermission()
-                      }
+                      if (checked && !Settings.canDrawOverlays(this)) askOverlayPermission()
+                  }
+
+                  eqCheck.setOnCheckedChangeListener { _, checked ->
+                      prefs.edit().putBoolean(VibeService.KEY_EQ, checked).apply()
+                      if (checked && !Settings.canDrawOverlays(this)) askOverlayPermission()
                   }
 
                   modeGroup.setOnCheckedChangeListener { _, checkedId ->
@@ -265,12 +279,12 @@ jobs:
                       Uri.parse("package:$packageName")
                   )
                   startActivity(intent)
-                  Toast.makeText(this, "فعّل إذن الظهور فوق التطبيقات لتشغيل إضاءة الحواف", Toast.LENGTH_LONG).show()
+                  Toast.makeText(this, "يرجى منح إذن الظهور فوق التطبيقات لتفعيل المؤثرات والإيكولايزر", Toast.LENGTH_LONG).show()
               }
 
               private fun startFlow() {
                   val prefs = getSharedPreferences(VibeService.PREFS, MODE_PRIVATE)
-                  if (prefs.getBoolean(VibeService.KEY_EDGE, true) && !Settings.canDrawOverlays(this)) {
+                  if ((prefs.getBoolean(VibeService.KEY_EDGE, true) || prefs.getBoolean(VibeService.KEY_EQ, true)) && !Settings.canDrawOverlays(this)) {
                       askOverlayPermission()
                       return
                   }
@@ -318,6 +332,58 @@ jobs:
               }
           }
           EOF_SV
+          mkdir -p "$(dirname 'app/src/main/java/com/example/soundvibe/EqualizerOverlayView.kt')"
+          cat > 'app/src/main/java/com/example/soundvibe/EqualizerOverlayView.kt' <<'EOF_SV'
+          package com.example.soundvibe
+
+          import android.content.Context
+          import android.graphics.Canvas
+          import android.graphics.Color
+          import android.graphics.Paint
+          import android.view.View
+
+          class EqualizerOverlayView(context: Context) : View(context) {
+
+              private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+              private val barCount = 18
+              private val barHeights = FloatArray(barCount)
+
+              private val discoPalette = intArrayOf(
+                  Color.parseColor("#FF00E5FF"),
+                  Color.parseColor("#FFFF1744"),
+                  Color.parseColor("#FF00E676"),
+                  Color.parseColor("#FFD500F9"),
+                  Color.parseColor("#FFFFEA00")
+              )
+
+              fun updateBars(energy: Float, bassEnergy: Float) {
+                  for (i in 0 until barCount) {
+                      val ratio = if (i < 6) bassEnergy else energy * (1f + (i % 4) * 0.2f)
+                      val target = (ratio * 1.5f).coerceIn(0.05f, 1f)
+                      barHeights[i] = barHeights[i] * 0.7f + target * 0.3f
+                  }
+                  postInvalidate()
+              }
+
+              override fun onDraw(canvas: Canvas) {
+                  super.onDraw(canvas)
+                  val w = width.toFloat()
+                  val h = height.toFloat()
+                  val barWidth = (w / barCount) * 0.65f
+                  val gap = (w / barCount) * 0.35f
+                  val maxBarH = 140f
+
+                  for (i in 0 until barCount) {
+                      val left = i * (barWidth + gap) + gap / 2
+                      val currentH = barHeights[i] * maxBarH
+                      val top = h - currentH
+                      paint.color = discoPalette[i % discoPalette.size]
+                      paint.alpha = 200
+                      canvas.drawRoundRect(left, top, left + barWidth, h, 8f, 8f, paint)
+                  }
+              }
+          }
+          EOF_SV
           mkdir -p "$(dirname 'app/src/main/java/com/example/soundvibe/VibeService.kt')"
           cat > 'app/src/main/java/com/example/soundvibe/VibeService.kt' <<'EOF_SV'
           package com.example.soundvibe
@@ -329,7 +395,9 @@ jobs:
           import android.content.Context
           import android.content.Intent
           import android.content.pm.ServiceInfo
+          import android.graphics.Color
           import android.graphics.PixelFormat
+          import android.graphics.drawable.GradientDrawable
           import android.media.AudioAttributes
           import android.media.AudioFormat
           import android.media.AudioPlaybackCaptureConfiguration
@@ -344,10 +412,12 @@ jobs:
           import android.os.Vibrator
           import android.os.VibratorManager
           import android.provider.Settings
+          import android.view.Gravity
           import android.view.View
           import android.view.WindowManager
           import androidx.core.app.NotificationCompat
           import kotlin.math.sqrt
+          import kotlin.random.Random
 
           class VibeService : Service() {
 
@@ -358,8 +428,19 @@ jobs:
 
               private lateinit var vibrator: Vibrator
               private var windowManager: WindowManager? = null
-              private var overlayView: View? = null
+              private var edgeOverlay: View? = null
+              private var eqOverlay: EqualizerOverlayView? = null
               private val mainHandler = Handler(Looper.getMainLooper())
+
+              private val discoColors = intArrayOf(
+                  Color.parseColor("#FF00E5FF"), // سماوي
+                  Color.parseColor("#FFFF0055"), // أحمر نيون
+                  Color.parseColor("#FF00FF66"), // أخضر فوسفوري
+                  Color.parseColor("#FFAA00FF"), // موف نيون
+                  Color.parseColor("#FFFFEE00"), // أصفر
+                  Color.parseColor("#FFFF6600")  // برتقالي ناري
+              )
+              private var currentColorIdx = 0
 
               override fun onBind(intent: Intent?): IBinder? = null
 
@@ -371,38 +452,76 @@ jobs:
                       @Suppress("DEPRECATION")
                       getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
                   }
-                  setupOverlay()
+                  setupOverlays()
               }
 
-              private fun setupOverlay() {
+              private fun setupOverlays() {
                   if (!Settings.canDrawOverlays(this)) return
                   try {
                       windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-                      val params = WindowManager.LayoutParams(
+                      val baseFlags = WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                              WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                              WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                              WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+
+                      val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                          WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                      else
+                          @Suppress("DEPRECATION")
+                          WindowManager.LayoutParams.TYPE_PHONE
+
+                      // 1. شاشة إضاءة الحواف
+                      val edgeParams = WindowManager.LayoutParams(
                           WindowManager.LayoutParams.MATCH_PARENT,
                           WindowManager.LayoutParams.MATCH_PARENT,
-                          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-                              WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-                          else
-                              @Suppress("DEPRECATION")
-                              WindowManager.LayoutParams.TYPE_PHONE,
-                          WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                                  WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                                  WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                                  WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                          windowType,
+                          baseFlags,
                           PixelFormat.TRANSLUCENT
                       )
-                      overlayView = View(this).apply {
-                          setBackgroundResource(R.drawable.edge_glow_border)
-                          visibility = View.GONE
+                      edgeOverlay = View(this).apply { visibility = View.GONE }
+                      windowManager?.addView(edgeOverlay, edgeParams)
+
+                      // 2. إيكولايزر أسفل الشاشة
+                      val eqParams = WindowManager.LayoutParams(
+                          WindowManager.LayoutParams.MATCH_PARENT,
+                          260,
+                          windowType,
+                          baseFlags,
+                          PixelFormat.TRANSLUCENT
+                      ).apply {
+                          gravity = Gravity.BOTTOM
                       }
-                      windowManager?.addView(overlayView, params)
+                      eqOverlay = EqualizerOverlayView(this).apply { visibility = View.GONE }
+                      windowManager?.addView(eqOverlay, eqParams)
                   } catch (_: Exception) {}
               }
 
-              private fun triggerEdgeGlow(durationMs: Long) {
-                  overlayView?.let { view ->
+              private fun triggerGlow(durationMs: Long) {
+                  edgeOverlay?.let { view ->
                       mainHandler.post {
+                          val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+                          val style = prefs.getInt(KEY_GLOW_STYLE, 1) // 1: Disco
+                          val strokeDp = prefs.getInt(KEY_EDGE_WIDTH, 12)
+                          val strokePx = (strokeDp * resources.displayMetrics.density).toInt()
+
+                          val selectedColor = when (style) {
+                              1 -> { // ديسكو عشوائي مع كل ضربة
+                                  discoColors[Random.nextInt(discoColors.size)]
+                              }
+                              2 -> { // رينبو تدريجي
+                                  currentColorIdx = (currentColorIdx + 1) % discoColors.size
+                                  discoColors[currentColorIdx]
+                              }
+                              3 -> Color.WHITE // وميض ستروب
+                              else -> Color.parseColor("#FF00E5FF") // سماوي كلاسيكي
+                          }
+
+                          val shape = GradientDrawable().apply {
+                              shape = GradientDrawable.RECTANGLE
+                              setStroke(strokePx, selectedColor)
+                              setColor(if (style == 1) Color.argb(30, Color.red(selectedColor), Color.green(selectedColor), Color.blue(selectedColor)) else Color.TRANSPARENT)
+                          }
+                          view.background = shape
                           view.visibility = View.VISIBLE
                           view.alpha = 1.0f
                       }
@@ -487,7 +606,13 @@ jobs:
                   rec.startRecording()
                   sendBroadcast(Intent(ACTION_STATE).setPackage(packageName))
 
-                  worker = Thread({ loop(rec, chunk) }, "SoundVibeDSP").also { it.start() }
+                  mainHandler.post {
+                      if (getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_EQ, true)) {
+                          eqOverlay?.visibility = View.VISIBLE
+                      }
+                  }
+
+                  worker = Thread({ loop(rec, chunk) }, "SoundVibeMaster").also { it.start() }
                   return true
               }
 
@@ -510,6 +635,7 @@ jobs:
                       val punch = prefs.getInt(KEY_PUNCH, 60)
                       val pulseMs = prefs.getInt(KEY_PULSE, 25).toLong()
                       val edgeEnabled = prefs.getBoolean(KEY_EDGE, true)
+                      val eqEnabled = prefs.getBoolean(KEY_EQ, true)
 
                       val alpha = when (mode) {
                           0 -> 0.009f
@@ -522,33 +648,43 @@ jobs:
                           else -> 1.5f
                       }
 
-                      var sum = 0.0
-                      for (i in 0 until n) {
-                          var s = buf[i] / 32768f
-                          if (mode != 2) {
-                              lp1 += alpha * (s - lp1)
-                              lp2 += alpha * (lp1 - lp2)
-                              s = lp2 * boost
-                          }
-                          sum += (s * s).toDouble()
-                      }
-                      val energy = sqrt(sum / n).toFloat()
+                      var sumTotal = 0.0
+                      var sumBass = 0.0
 
-                      avgEnergy = avgEnergy * 0.94f + energy * 0.06f
+                      for (i in 0 until n) {
+                          val raw = buf[i] / 32768f
+                          sumTotal += (raw * raw).toDouble()
+
+                          lp1 += alpha * (raw - lp1)
+                          lp2 += alpha * (lp1 - lp2)
+                          val bassFiltered = lp2 * boost
+                          sumBass += (bassFiltered * bassFiltered).toDouble()
+                      }
+
+                      val rawEnergy = sqrt(sumTotal / n).toFloat()
+                      val bassEnergy = sqrt(sumBass / n).toFloat()
+
+                      // تحديث الإيكولايزر المرئي
+                      if (eqEnabled) {
+                          mainHandler.post { eqOverlay?.updateBars(rawEnergy, bassEnergy) }
+                      }
+
+                      val effectiveEnergy = if (mode == 2) rawEnergy else bassEnergy
+                      avgEnergy = avgEnergy * 0.94f + effectiveEnergy * 0.06f
 
                       val thresholdMultiplier = 1.3f + (punch / 100f) * 1.7f
                       val dynamicThreshold = avgEnergy * thresholdMultiplier
                       val minFloor = 0.04f + (punch / 100f) * 0.08f
 
                       val now = System.currentTimeMillis()
-                      val isHit = energy > dynamicThreshold && energy > minFloor
+                      val isHit = effectiveEnergy > dynamicThreshold && effectiveEnergy > minFloor
                       val cooldown = pulseMs + 90L
 
                       if (isHit && (now - lastBeatTime > cooldown)) {
                           lastBeatTime = now
                           val amp = if (hasAmp) {
                               val sensMultiplier = 0.8f + (sens / 100f) * 1.5f
-                              ((energy * sensMultiplier).coerceIn(0.2f, 1f) * 255f).toInt()
+                              ((effectiveEnergy * sensMultiplier).coerceIn(0.2f, 1f) * 255f).toInt()
                           } else 255
 
                           try {
@@ -560,7 +696,7 @@ jobs:
                           } catch (_: Exception) {}
 
                           if (edgeEnabled) {
-                              triggerEdgeGlow(pulseMs + 35L)
+                              triggerGlow(pulseMs + 45L)
                           }
                       }
                   }
@@ -606,10 +742,12 @@ jobs:
                   projection = null
                   vibrator.cancel()
                   isRunning = false
-                  overlayView?.let {
-                      windowManager?.removeView(it)
-                      overlayView = null
+
+                  mainHandler.post {
+                      edgeOverlay?.let { windowManager?.removeView(it); edgeOverlay = null }
+                      eqOverlay?.let { windowManager?.removeView(it); eqOverlay = null }
                   }
+
                   sendBroadcast(Intent(ACTION_STATE).setPackage(packageName))
                   super.onDestroy()
               }
@@ -626,6 +764,9 @@ jobs:
                   const val KEY_PULSE = "pulse"
                   const val KEY_MODE = "mode"
                   const val KEY_EDGE = "edge_glow"
+                  const val KEY_EQ = "show_eq"
+                  const val KEY_GLOW_STYLE = "glow_style"
+                  const val KEY_EDGE_WIDTH = "edge_width"
 
                   private const val CHANNEL_ID = "vibe"
                   private const val NOTIF_ID = 1
@@ -653,7 +794,7 @@ jobs:
                       android:id="@+id/statusText"
                       android:layout_width="match_parent"
                       android:layout_height="wrap_content"
-                      android:layout_marginTop="20dp"
+                      android:layout_marginTop="16dp"
                       android:gravity="center"
                       android:text="@string/status_off"
                       android:textSize="20sp" />
@@ -662,35 +803,114 @@ jobs:
                       android:id="@+id/toggleButton"
                       android:layout_width="match_parent"
                       android:layout_height="60dp"
-                      android:layout_marginTop="20dp"
+                      android:layout_marginTop="16dp"
                       android:text="@string/start"
                       android:textSize="18sp" />
 
-                  <!-- تأثيرات الشاشة -->
+                  <!-- قسم الإيكولايزر والمؤثرات البصرية -->
+                  <TextView
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="28dp"
+                      android:text="@string/effects_header"
+                      android:textStyle="bold"
+                      android:textColor="#00E5FF"
+                      android:textSize="17sp" />
+
                   <CheckBox
                       android:id="@+id/edgeGlowCheck"
                       android:layout_width="match_parent"
                       android:layout_height="wrap_content"
-                      android:layout_marginTop="24dp"
+                      android:layout_marginTop="6dp"
                       android:checked="true"
                       android:text="@string/edge_glow_label"
-                      android:textStyle="bold"
-                      android:textSize="16sp" />
+                      android:textSize="15sp" />
 
-                  <!-- نمط التردد -->
+                  <CheckBox
+                      android:id="@+id/eqCheck"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="4dp"
+                      android:checked="true"
+                      android:text="@string/eq_label"
+                      android:textSize="15sp" />
+
+                  <!-- نمط الإضاءة (ديسكو / رينبو / فلاش) -->
                   <TextView
                       android:layout_width="match_parent"
                       android:layout_height="wrap_content"
-                      android:layout_marginTop="20dp"
-                      android:text="@string/freq_mode"
+                      android:layout_marginTop="14dp"
+                      android:text="@string/glow_style_label"
                       android:textStyle="bold"
-                      android:textSize="16sp" />
+                      android:textSize="15sp" />
+
+                  <RadioGroup
+                      android:id="@+id/glowModeGroup"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="4dp">
+
+                      <RadioButton
+                          android:id="@+id/styleDisco"
+                          android:layout_width="wrap_content"
+                          android:layout_height="wrap_content"
+                          android:text="@string/style_disco" />
+
+                      <RadioButton
+                          android:id="@+id/styleRainbow"
+                          android:layout_width="wrap_content"
+                          android:layout_height="wrap_content"
+                          android:text="@string/style_rainbow" />
+
+                      <RadioButton
+                          android:id="@+id/styleStrobe"
+                          android:layout_width="wrap_content"
+                          android:layout_height="wrap_content"
+                          android:text="@string/style_strobe" />
+
+                      <RadioButton
+                          android:id="@+id/styleStatic"
+                          android:layout_width="wrap_content"
+                          android:layout_height="wrap_content"
+                          android:text="@string/style_static" />
+                  </RadioGroup>
+
+                  <TextView
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="12dp"
+                      android:text="@string/edge_width_label"
+                      android:textSize="14sp" />
+
+                  <SeekBar
+                      android:id="@+id/edgeWidthBar"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:max="24"
+                      android:progress="12" />
+
+                  <!-- قسم ضبط الصوت والبيز -->
+                  <TextView
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="28dp"
+                      android:text="@string/audio_header"
+                      android:textStyle="bold"
+                      android:textColor="#00E5FF"
+                      android:textSize="17sp" />
+
+                  <TextView
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="8dp"
+                      android:text="@string/freq_mode"
+                      android:textSize="15sp" />
 
                   <RadioGroup
                       android:id="@+id/modeGroup"
                       android:layout_width="match_parent"
                       android:layout_height="wrap_content"
-                      android:layout_marginTop="8dp">
+                      android:layout_marginTop="4dp">
 
                       <RadioButton
                           android:id="@+id/modeSubBass"
@@ -711,13 +931,12 @@ jobs:
                           android:text="@string/mode_all" />
                   </RadioGroup>
 
-                  <!-- قوة ضربة البيز -->
                   <TextView
                       android:layout_width="match_parent"
                       android:layout_height="wrap_content"
-                      android:layout_marginTop="20dp"
+                      android:layout_marginTop="16dp"
                       android:text="@string/punch_threshold"
-                      android:textSize="15sp" />
+                      android:textSize="14sp" />
 
                   <SeekBar
                       android:id="@+id/punchBar"
@@ -726,13 +945,12 @@ jobs:
                       android:max="100"
                       android:progress="60" />
 
-                  <!-- سرعة/مدة النبضة -->
                   <TextView
                       android:layout_width="match_parent"
                       android:layout_height="wrap_content"
-                      android:layout_marginTop="16dp"
+                      android:layout_marginTop="12dp"
                       android:text="@string/pulse_speed"
-                      android:textSize="15sp" />
+                      android:textSize="14sp" />
 
                   <SeekBar
                       android:id="@+id/pulseBar"
@@ -741,13 +959,12 @@ jobs:
                       android:max="60"
                       android:progress="25" />
 
-                  <!-- الحساسية العامة -->
                   <TextView
                       android:layout_width="match_parent"
                       android:layout_height="wrap_content"
-                      android:layout_marginTop="16dp"
+                      android:layout_marginTop="12dp"
                       android:text="@string/sensitivity"
-                      android:textSize="15sp" />
+                      android:textSize="14sp" />
 
                   <SeekBar
                       android:id="@+id/sensitivityBar"
@@ -755,6 +972,10 @@ jobs:
                       android:layout_height="wrap_content"
                       android:max="100"
                       android:progress="50" />
+
+                  <View
+                      android:layout_width="match_parent"
+                      android:layout_height="40dp" />
 
               </LinearLayout>
           </ScrollView>
@@ -767,17 +988,29 @@ jobs:
               <string name="start">تشغيل</string>
               <string name="stop">إيقاف</string>
               <string name="status_off">متوقف</string>
-              <string name="status_on">شغّال — التقاط البيز نشط</string>
-              <string name="edge_glow_label">إضاءة حواف الشاشة مع ضربة البيز (Neon Edge Glow)</string>
+              <string name="status_on">شغّال — حفلة ديسكو واهتزاز تفاعلي</string>
+              
+              <string name="effects_header">المؤثرات البصرية والإيكولايزر</string>
+              <string name="edge_glow_label">تفعيل إضاءة حواف الشاشة (Edge Glow)</string>
+              <string name="eq_label">تفعيل الإيكولايزر الحي أسفل الشاشة (Visualizer)</string>
+              <string name="glow_style_label">وضع الإضاءة:</string>
+              <string name="style_disco">ديسكو بارتي (ألوان نيون متغيرة مع كل ضربة)</string>
+              <string name="style_rainbow">رينبو تدريجي (Rainbow Cycle)</string>
+              <string name="style_strobe">فلاش ستروب خاطف (Strobe Flash)</string>
+              <string name="style_static">لون سماوي ثابت</string>
+              <string name="edge_width_label">سماكة إطار الإضاءة:</string>
+
+              <string name="audio_header">إعدادات الصوت والبيز</string>
               <string name="freq_mode">نطاق التردد (نوع الصوت):</string>
-              <string name="mode_sub">بيز عميق فقط (Sub-Bass &lt; 60Hz - الأنسب للرجاج)</string>
+              <string name="mode_sub">بيز عميق فقط (Sub-Bass &lt; 60Hz)</string>
               <string name="mode_kick">ضربات الطبل والإيقاع (Kick &lt; 130Hz)</string>
               <string name="mode_all">كامل الصوت (كل الترددات)</string>
-              <string name="punch_threshold">عتبة الضربة (ارفع السلايدر لمنع الرجة المستمرة):</string>
-              <string name="pulse_speed">مدة النبضة والإضاءة (يسار: نقرة سريعة | يمين: أطول):</string>
+              <string name="punch_threshold">عتبة ضربة البيز (لمنع الرجة المستمرة):</string>
+              <string name="pulse_speed">مدة النبضة والإضاءة:</string>
               <string name="sensitivity">حساسية الالتقاط العامة:</string>
-              <string name="notif_title">صوت لرجاج شغّال</string>
-              <string name="notif_text">الهاتف يهتز ويضيء مع ضربات البيز</string>
+              
+              <string name="notif_title">وضع الديسكو والاهتزاز شغّال</string>
+              <string name="notif_text">الهاتف يرقص ويضيء مع الصوت</string>
               <string name="notif_channel">خدمة الاهتزاز</string>
               <string name="mic_denied">لازم تعطي صلاحية الصوت عشان يشتغل التطبيق</string>
               <string name="no_vibrator">هاتفك ما فيه محرك اهتزاز</string>
